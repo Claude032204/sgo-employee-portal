@@ -29,9 +29,14 @@ class LoginRequest extends FormRequest
         $this->ensureIsNotRateLimited();
 
         $login = $this->input('login');
-        $field = filter_var($login, FILTER_VALIDATE_EMAIL) ? 'email' : 'employee_portal_id';
+        $field = filter_var($login, FILTER_VALIDATE_EMAIL) ? 'email' : 'login_id';
 
-        if (!Auth::attempt([$field => $login, 'password' => $this->string('password')], $this->boolean('remember'))) {
+        if (
+            !Auth::attempt([
+                $field => $login,
+                'password' => $this->string('password'),
+            ], $this->boolean('remember'))
+        ) {
             RateLimiter::hit($this->throttleKey());
 
             throw ValidationException::withMessages([

@@ -22,8 +22,18 @@ class AuthenticatedSessionController extends Controller
 
         $request->session()->regenerate();
 
-        if (auth()->user()->role === 'admin') {
+        $user = auth()->user();
+
+        if ($user->role === 'admin') {
             return redirect()->route('admin.dashboard');
+        }
+
+        if ($user->role === 'employee' && (empty($user->email) || $user->must_change_password)) {
+            return redirect()->route('employee.complete-account');
+        }
+
+        if ($user->role === 'employee' && !$user->hasVerifiedEmail()) {
+            return redirect()->route('verification.notice');
         }
 
         return redirect()->route('employee.dashboard');
@@ -34,7 +44,6 @@ class AuthenticatedSessionController extends Controller
         Auth::guard('web')->logout();
 
         $request->session()->invalidate();
-
         $request->session()->regenerateToken();
 
         return redirect('/');

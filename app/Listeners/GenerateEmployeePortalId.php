@@ -15,7 +15,7 @@ class GenerateEmployeePortalId
             return;
         }
 
-        if (!empty($user->employee_portal_id)) {
+        if (!empty($user->login_id)) {
             return;
         }
 
@@ -26,11 +26,11 @@ class GenerateEmployeePortalId
 
         do {
             $candidateId = $prefix . str_pad($sequence, 4, '0', STR_PAD_LEFT);
-            $exists = User::where('employee_portal_id', $candidateId)->exists();
+            $exists = User::where('login_id', $candidateId)->exists();
             $sequence++;
         } while ($exists);
 
-        $user->employee_portal_id = $candidateId;
+        $user->login_id = $candidateId;
         $user->save();
     }
 }

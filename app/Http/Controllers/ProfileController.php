@@ -9,13 +9,18 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Redirect;
 use Illuminate\View\View;
 
+
 class ProfileController extends Controller
 {
     /**
      * Display the user's profile form.
      */
-    public function edit(Request $request): View
+    public function edit(Request $request)
     {
+        if ($request->user()->role !== 'employee') {
+            return redirect()->route('admin.dashboard');
+        }
+
         return view('profile.edit', [
             'user' => $request->user(),
         ]);
@@ -24,17 +29,35 @@ class ProfileController extends Controller
     /**
      * Update the user's profile information.
      */
-    public function update(ProfileUpdateRequest $request): RedirectResponse
+    public function update(Request $request): RedirectResponse
     {
-        $request->user()->fill($request->validated());
-
-        if ($request->user()->isDirty('email')) {
-            $request->user()->email_verified_at = null;
+        if ($request->user()->role !== 'employee') {
+            return redirect()->route('admin.dashboard');
         }
 
-        $request->user()->save();
+        $user = $request->user();
 
-        return Redirect::route('profile.edit')->with('status', 'profile-updated');
+        $request->validate([
+            'employee_id' => ['nullable', 'string', 'max:255'],
+            'sss' => ['nullable', 'string', 'max:255'],
+            'tin' => ['nullable', 'string', 'max:255'],
+            'philhealth' => ['nullable', 'string', 'max:255'],
+            'pagibig' => ['nullable', 'string', 'max:255'],
+            'position' => ['nullable', 'string', 'max:255'],
+            'department' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $user->update([
+            'employee_id' => $request->employee_id,
+            'sss' => $request->sss,
+            'tin' => $request->tin,
+            'philhealth' => $request->philhealth,
+            'pagibig' => $request->pagibig,
+            'position' => $request->position,
+            'department' => $request->department,
+        ]);
+
+        return back()->with('status', 'profile-updated');
     }
 
     /**

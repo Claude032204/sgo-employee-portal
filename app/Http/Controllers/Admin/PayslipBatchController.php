@@ -8,13 +8,15 @@ use App\Models\Payslip;
 use App\Models\PayslipBatch;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\File;
 use ZipArchive;
 
 class PayslipBatchController extends Controller
 {
     public function index()
     {
-        $batches = PayslipBatch::latest()->get();
+        $batches = PayslipBatch::latest()->paginate(10); // 👈 change here
 
         return view('admin.payslips.index', compact('batches'));
     }
@@ -28,8 +30,18 @@ class PayslipBatchController extends Controller
     {
         $request->validate([
             'zip_file' => ['required', 'file', 'mimes:zip'],
-            'pay_period' => ['required', 'string', 'max:255'],
+            'month' => ['required', 'string', 'max:20'],
+            'start_day' => ['required', 'integer', 'min:1', 'max:31'],
+            'end_day' => ['required', 'integer', 'min:1', 'max:31'],
+            'year' => ['required', 'integer', 'min:2000', 'max:2100'],
         ]);
+
+        $payPeriod = $this->buildPayPeriod(
+            $request->month,
+            (int) $request->start_day,
+            (int) $request->end_day,
+            (int) $request->year
+        );
 
         $zipPath = $request->file('zip_file')->store('payslip_zips', 'public');
 
@@ -87,7 +99,6 @@ class PayslipBatchController extends Controller
             $fullPdfPath = $extractPath . DIRECTORY_SEPARATOR . $pdfFile;
             $baseName = pathinfo($pdfFile, PATHINFO_FILENAME);
 
-            // Convert all pages of PDF to PNG files
             $outputPattern = $imagePath . DIRECTORY_SEPARATOR . $baseName . '_page_%03d.png';
 
             $gsCommand = 'gswin64c -dSAFER -dBATCH -dNOPAUSE -sDEVICE=png16m -r350 ' .
@@ -121,7 +132,7 @@ class PayslipBatchController extends Controller
                     $cropPath,
                     $batch->id,
                     $pdfFile,
-                    $request->pay_period,
+                    $payPeriod,
                     $pageNumber
                 );
             }
@@ -159,7 +170,6 @@ class PayslipBatchController extends Controller
         $width = imagesx($image);
         $height = imagesy($image);
 
-        // Ignore side margins
         $leftMargin = (int) round($width * 0.05);
         $rightMargin = (int) round($width * 0.95);
 
@@ -188,7 +198,6 @@ class PayslipBatchController extends Controller
             $contentRows[$y] = $darkRatio > 0.015;
         }
 
-        // Build raw bands
         $bands = [];
         $inBand = false;
         $startY = 0;
@@ -206,7 +215,6 @@ class PayslipBatchController extends Controller
             }
         }
 
-        // Merge tiny gaps
         $mergedBands = [];
         $minGap = 30;
 
@@ -227,7 +235,6 @@ class PayslipBatchController extends Controller
             }
         }
 
-        // Remove noise
         $validBands = [];
         $minBandHeight = 180;
 
@@ -333,19 +340,17 @@ class PayslipBatchController extends Controller
         foreach ($employees as $employee) {
             $name = $this->normalizeName($employee->name);
 
-            // Exact full-name match
             if (str_contains($normalizedText, $name)) {
                 return [$employee, $employee->name];
             }
 
-            // Reversed format match: LASTNAME, FIRSTNAME MIDDLENAME
             $reversed = $this->normalizeReversedName($employee->name);
             if (str_contains($normalizedText, $reversed)) {
                 return [$employee, $employee->name];
             }
 
-            // Partial match: first + last
             $parts = explode(' ', $name);
+
             if (count($parts) >= 2) {
                 $first = $parts[0];
                 $last = end($parts);
@@ -355,7 +360,6 @@ class PayslipBatchController extends Controller
                 }
             }
 
-            // Fuzzy similarity
             similar_text($normalizedText, $name, $percent);
 
             if ($percent > $bestScore) {
@@ -412,6 +416,19 @@ class PayslipBatchController extends Controller
         return trim($reversed);
     }
 
+    private function buildPayPeriod(string $month, int $startDay, int $endDay, int $year): string
+    {
+        if ($startDay > $endDay) {
+            abort(422, 'Start day cannot be greater than end day.');
+        }
+
+        if ($startDay === $endDay) {
+            return "{$month} {$startDay}, {$year}";
+        }
+
+        return "{$month} {$startDay}-{$endDay}, {$year}";
+    }
+
     public function unmatched($batchId)
     {
         $batch = PayslipBatch::findOrFail($batchId);
@@ -440,7 +457,7 @@ class PayslipBatchController extends Controller
 
         $payslip->update([
             'user_id' => $user->id,
-            'employee_portal_id' => $user->employee_portal_id,
+            'employee_portal_id' => $user->login_id,
             'employee_name' => $user->name,
             'detected_name' => $user->name,
             'match_status' => 'matched',
@@ -453,6 +470,49 @@ class PayslipBatchController extends Controller
         );
 
         return back()->with('success', 'Payslip assigned successfully.');
+    }
+
+    public function destroy($batchId)
+    {
+        $batch = PayslipBatch::findOrFail($batchId);
+
+        // Delete payslip files connected to this batch
+        $payslips = Payslip::where('batch_id', $batch->id)->get();
+
+        foreach ($payslips as $payslip) {
+            if ($payslip->file_path && Storage::disk('public')->exists($payslip->file_path)) {
+                Storage::disk('public')->delete($payslip->file_path);
+            }
+        }
+
+        // Delete original ZIP if it exists
+        if ($batch->zip_file_path && Storage::disk('public')->exists($batch->zip_file_path)) {
+            Storage::disk('public')->delete($batch->zip_file_path);
+        }
+
+        // Delete whole batch folder from storage/app/public/payslip_batches/batch_{id}
+        $batchFolder = storage_path('app/public/payslip_batches/batch_' . $batch->id);
+        if (File::exists($batchFolder)) {
+            File::deleteDirectory($batchFolder);
+        }
+
+        // Delete related payslip records
+        Payslip::where('batch_id', $batch->id)->delete();
+
+        $batchName = $batch->batch_name;
+
+        // Delete the batch record
+        $batch->delete();
+
+        $this->logActivity(
+            auth()->id(),
+            'delete_batch',
+            'Deleted payslip batch: ' . $batchName
+        );
+
+        return redirect()
+            ->route('admin.payslips.index')
+            ->with('success', 'Payslip batch deleted successfully.');
     }
 
     private function logActivity(?int $userId, string $action, string $description): void
